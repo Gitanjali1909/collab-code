@@ -24,24 +24,26 @@ export function Collaborators({ projectId }: CollaboratorsProps) {
   useEffect(() => {
     const socket = initializeSocket(projectId)
 
+    if (!socket) {
+      console.log("[v0] Collaborators running in local mode")
+      return
+    }
+
     // Join the project room
     socket.emit("join-project", { projectId })
 
     // Listen for user list updates
     socket.on("users-update", (activeUsers: User[]) => {
-      console.log("[v0] Active users updated:", activeUsers)
       setUsers(activeUsers)
     })
 
     // Listen for user joined
     socket.on("user-joined", (user: User) => {
-      console.log("[v0] User joined:", user)
       setUsers((prev) => [...prev, user])
     })
 
     // Listen for user left
     socket.on("user-left", (userId: string) => {
-      console.log("[v0] User left:", userId)
       setUsers((prev) => prev.filter((u) => u.id !== userId))
     })
 
@@ -52,6 +54,14 @@ export function Collaborators({ projectId }: CollaboratorsProps) {
       socket.off("user-left")
     }
   }, [projectId])
+
+  if (users.length === 0) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="text-sm text-muted-foreground">Local mode</span>
+      </div>
+    )
+  }
 
   return (
     <div className="flex items-center gap-2">

@@ -6,38 +6,33 @@ import { initializeSocket } from "@/lib/socket"
 
 interface PreviewPaneProps {
   projectId: string
+  htmlContent: string
 }
 
-export function PreviewPane({ projectId }: PreviewPaneProps) {
+export function PreviewPane({ projectId, htmlContent }: PreviewPaneProps) {
   const [previewContent, setPreviewContent] = useState("")
   const iframeRef = useRef<HTMLIFrameElement>(null)
+
+  useEffect(() => {
+    if (htmlContent) {
+      setPreviewContent(htmlContent)
+    }
+  }, [htmlContent])
 
   useEffect(() => {
     const socket = initializeSocket(projectId)
 
     // Listen for code changes
-    socket.on("code-update", (code: string) => {
-      console.log("[v0] Code update received")
-      setPreviewContent(code)
-    })
+    if (socket) {
+      socket.on("code-update", (code: string) => {
+        setPreviewContent(code)
+      })
 
-    return () => {
-      socket.off("code-update")
-    }
-  }, [projectId])
-
-  useEffect(() => {
-    if (iframeRef.current && previewContent) {
-      const iframe = iframeRef.current
-      const document = iframe.contentDocument || iframe.contentWindow?.document
-
-      if (document) {
-        document.open()
-        document.write(previewContent)
-        document.close()
+      return () => {
+        socket.off("code-update")
       }
     }
-  }, [previewContent])
+  }, [projectId])
 
   return (
     <motion.div
@@ -52,6 +47,7 @@ export function PreviewPane({ projectId }: PreviewPaneProps) {
       <iframe
         ref={iframeRef}
         title="Code Preview"
+        srcDoc={previewContent}
         sandbox="allow-scripts"
         className="h-full w-full border-0 bg-white"
       />

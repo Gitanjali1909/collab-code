@@ -3,7 +3,7 @@ import { WebsocketProvider } from "y-websocket"
 
 interface YjsSetup {
   doc: Y.Doc
-  provider: WebsocketProvider
+  provider: WebsocketProvider | null
   text: Y.Text
 }
 
@@ -21,16 +21,29 @@ export async function initializeYjs(projectId: string, editor?: any): Promise<Yj
   // Create a shared text type
   const text = doc.getText("monaco")
 
-  // Connect to Yjs WebSocket server
-  const provider = new WebsocketProvider(
-    process.env.NEXT_PUBLIC_YJS_SERVER_URL || "ws://localhost:1234",
-    projectId,
-    doc,
-  )
+  let provider: WebsocketProvider | null = null
 
-  provider.on("status", (event: any) => {
-    console.log("[v0] Yjs connection status:", event.status)
-  })
+  if (process.env.NEXT_PUBLIC_YJS_SERVER_URL) {
+    try {
+      provider = new WebsocketProvider(process.env.NEXT_PUBLIC_YJS_SERVER_URL, projectId, doc, {
+        connect: true,
+        WebSocketPolyfill: undefined,
+      })
+
+      provider.on("status", (event: any) => {
+        console.log("[v0] Yjs connection status:", event.status)
+      })
+
+      provider.on("connection-error", () => {
+        console.log("[v0] Yjs server unavailable - running in local mode")
+      })
+    } catch (error) {
+      console.log("[v0] Yjs initialization failed - running in local mode")
+      provider = null
+    }
+  } else {
+    console.log("[v0] Yjs server URL not configured - running in local mode")
+  }
 
   // Bind Yjs text to Monaco editor if provided
   if (editor) {
@@ -77,7 +90,9 @@ export function getYjsInstance(projectId: string): YjsSetup | undefined {
 export function destroyYjsInstance(projectId: string): void {
   const instance = yjsInstances.get(projectId)
   if (instance) {
-    instance.provider.destroy()
+    if (instance.provider) {
+      instance.provider.destroy()
+    }
     instance.doc.destroy()
     yjsInstances.delete(projectId)
   }

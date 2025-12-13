@@ -1,12 +1,22 @@
 import { io, type Socket } from "socket.io-client"
 
 let socket: Socket | null = null
+let connectionAttempted = false
 
-export function initializeSocket(projectId: string): Socket {
-  if (!socket) {
-    socket = io(process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001", {
+export function initializeSocket(projectId: string): Socket | null {
+  if (!process.env.NEXT_PUBLIC_SOCKET_URL) {
+    console.log("[v0] Socket.io server URL not configured - running in local mode")
+    return null
+  }
+
+  if (!socket && !connectionAttempted) {
+    connectionAttempted = true
+
+    // Connect to Socket.io server
+    socket = io(process.env.NEXT_PUBLIC_SOCKET_URL, {
       transports: ["websocket", "polling"],
       autoConnect: true,
+      reconnection: false, // Disable reconnection attempts
     })
 
     socket.on("connect", () => {
@@ -17,8 +27,9 @@ export function initializeSocket(projectId: string): Socket {
       console.log("[v0] Socket disconnected")
     })
 
-    socket.on("connect_error", (error: unknown) => {
-      console.error("[v0] Socket connection error:", error)
+    socket.on("connect_error", (error) => {
+      console.log("[v0] Socket connection unavailable - running in local mode")
+      socket = null
     })
   }
 
@@ -34,4 +45,5 @@ export function disconnectSocket(): void {
     socket.disconnect()
     socket = null
   }
+  connectionAttempted = false
 }
