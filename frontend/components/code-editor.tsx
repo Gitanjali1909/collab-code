@@ -133,7 +133,7 @@ ${html}
         <h2 className="text-sm font-medium">Code Editor</h2>
         <button
           onClick={generateHTML}
-          className="flex items-center gap-2 rounded bg-purple-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-white-700"
+          className="flex items-center gap-2 rounded bg-purple-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-purple-700"
         >
           Run ▶
         </button>
