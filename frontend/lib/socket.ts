@@ -1,34 +1,37 @@
-import { io, type Socket } from "socket.io-client"
+import { io } from "socket.io-client"
+import type { Socket } from "socket.io-client"
 
 let socket: Socket | null = null
 let connectionAttempted = false
 
 export function initializeSocket(projectId: string): Socket | null {
-  if (!process.env.NEXT_PUBLIC_SOCKET_URL) {
-    console.log("[v0] Socket.io server URL not configured - running in local mode")
+  const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL
+
+  if (!SOCKET_URL) {
+    console.log("Socket URL not configured — running local")
     return null
   }
 
   if (!socket && !connectionAttempted) {
     connectionAttempted = true
 
-    // Connect to Socket.io server
-    socket = io(process.env.NEXT_PUBLIC_SOCKET_URL, {
+    socket = io(SOCKET_URL, {
       transports: ["websocket", "polling"],
       autoConnect: true,
-      reconnection: false, // Disable reconnection attempts
+      reconnection: false,
     })
 
     socket.on("connect", () => {
-      console.log("[v0] Socket connected:", socket?.id)
+      console.log("Socket connected:", socket?.id)
+      socket?.emit("join", { projectId })
     })
 
     socket.on("disconnect", () => {
-      console.log("[v0] Socket disconnected")
+      console.log("Socket disconnected")
     })
 
-    socket.on("connect_error", (error) => {
-      console.log("[v0] Socket connection unavailable - running in local mode")
+    socket.on("connect_error", (error: Error) => {
+      console.log("Socket unavailable — local mode")
       socket = null
     })
   }
