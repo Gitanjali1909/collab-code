@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useState } from "react"
 import { motion } from "framer-motion"
 import { initializeYjs } from "@/lib/yjs"
 import { initializeSocket } from "@/lib/socket"
@@ -10,49 +10,85 @@ interface CodeEditorProps {
   onRunCode: (html: string) => void
 }
 
+type Language = "html" | "css" | "javascript" | "python"
+
 export function CodeEditor({ projectId, onRunCode }: CodeEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const monacoRef = useRef<any>(null)
 
+  // ✅ browser-safe timers
+  const debounceTimerRef = useRef<number | null>(null)
+  const saveTimerRef = useRef<number | null>(null)
+
+  const [currentLanguage, setCurrentLanguage] = useState<Language>("html")
+  const [content, setContent] = useState<Record<Language, string>>({
+    html: "<!-- Write your HTML here -->\n<h1>Hello World</h1>\n",
+    css: "/* Write your CSS here */\nbody {\n  font-family: sans-serif;\n  padding: 20px;\n}\n",
+    javascript: "// Write your JavaScript here\nconsole.log('Hello World');\n",
+    python: "# Write your Python here\nprint('Hello World')\n",
+  })
+
+  const [saveStatus, setSaveStatus] =
+    useState<"idle" | "saving" | "saved">("idle")
+
   const generateHTML = () => {
-    if (!monacoRef.current) return
-
-    const code = monacoRef.current.getValue()
-
-    // Parse code sections - assuming format with HTML, CSS, JS comments
-    let html = ""
-    let css = ""
-    let js = ""
-
-    // Simple parsing - split by common delimiters or use entire code as HTML
-    if (code.includes("/* CSS */") || code.includes("// CSS")) {
-      const parts = code.split(/\/\*\s*CSS\s*\*\/|\/\/\s*CSS/i)
-      html = parts[0] || ""
-      const rest = parts[1] || ""
-
-      if (rest.includes("/* JS */") || rest.includes("// JS")) {
-        const jsParts = rest.split(/\/\*\s*JS\s*\*\/|\/\/\s*JS/i)
-        css = jsParts[0] || ""
-        js = jsParts[1] || ""
-      } else {
-        css = rest
-      }
-    } else {
-      html = code
-    }
-
     const fullHTML = `<!DOCTYPE html>
 <html>
 <head>
-<style>${css}</style>
+<style>${content.css}</style>
 </head>
 <body>
-${html}
-<script>${js}</script>
+${content.html}
+<script>${content.javascript}</script>
 </body>
 </html>`
 
     onRunCode(fullHTML)
+  }
+
+  const saveToBackend = async () => {
+    setSaveStatus("saving")
+    try {
+      await fetch(`/api/projects/${projectId}/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(content),
+      })
+      setSaveStatus("saved")
+      window.setTimeout(() => setSaveStatus("idle"), 2000)
+    } catch (error) {
+      console.error("Failed to save:", error)
+      setSaveStatus("idle")
+    }
+  }
+
+  const switchLanguage = (lang: Language) => {
+    const editor = monacoRef.current
+    if (!editor) return
+
+    // save current buffer
+    setContent((prev) => ({
+      ...prev,
+      [currentLanguage]: editor.getValue(),
+    }))
+
+    setCurrentLanguage(lang)
+
+    const model = editor.getModel()
+    if (model) {
+      const monaco = (window as any).monaco
+
+      // ✅ Monaco language mapping (Python was broken before)
+      const monacoLang =
+        lang === "javascript"
+          ? "javascript"
+          : lang === "python"
+          ? "python"
+          : lang
+
+      monaco.editor.setModelLanguage(model, monacoLang)
+      editor.setValue(content[lang])
+    }
   }
 
   useEffect(() => {
@@ -61,48 +97,53 @@ ${html}
     const initEditor = async () => {
       if (!editorRef.current) return
 
-      // Dynamically import Monaco editor
       const monaco = await import("monaco-editor")
+      ;(window as any).monaco = monaco
 
-      if (!mounted || !editorRef.current) return
+      if (!mounted) return
 
-      // Create editor instance
       const editor = monaco.editor.create(editorRef.current, {
-        value: "// Start coding...\n",
-        language: "typescript",
+        value: content.html,
+        language: "html",
         theme: "vs-dark",
         automaticLayout: true,
         minimap: { enabled: false },
         fontSize: 14,
-        lineNumbers: "on",
-        renderWhitespace: "selection",
         scrollBeyondLastLine: false,
       })
 
       monacoRef.current = editor
 
-      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
-        generateHTML()
+      editor.addCommand(
+        monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+        generateHTML
+      )
+
+      editor.onDidChangeModelContent(() => {
+        const value = editor.getValue()
+
+        setContent((prev) => ({
+          ...prev,
+          [currentLanguage]: value,
+        }))
+
+        if (debounceTimerRef.current)
+          window.clearTimeout(debounceTimerRef.current)
+        if (saveTimerRef.current)
+          window.clearTimeout(saveTimerRef.current)
+
+        debounceTimerRef.current = window.setTimeout(generateHTML, 800)
+        saveTimerRef.current = window.setTimeout(saveToBackend, 2000)
       })
 
-      // Initialize Yjs for collaborative editing
       try {
-        const yjsProvider = await initializeYjs(projectId, editor)
-      } catch (error) {
-        console.log("[v0] Yjs not available - continuing in local mode")
+        await initializeYjs(projectId, editor)
+      } catch {
+        // silent fallback
       }
 
-      // Initialize Socket.io for real-time updates
       const socket = initializeSocket(projectId)
-
       if (socket) {
-        // Listen for cursor updates from other users
-        socket.on("cursor-update", (data: any) => {
-          console.log("[v0] Received cursor update:", data)
-          // Handle remote cursor rendering
-        })
-
-        // Emit cursor position changes
         editor.onDidChangeCursorPosition((e) => {
           socket.emit("cursor-move", {
             projectId,
@@ -116,9 +157,11 @@ ${html}
 
     return () => {
       mounted = false
-      if (monacoRef.current) {
-        monacoRef.current.dispose()
-      }
+      if (debounceTimerRef.current)
+        window.clearTimeout(debounceTimerRef.current)
+      if (saveTimerRef.current)
+        window.clearTimeout(saveTimerRef.current)
+      monacoRef.current?.dispose()
     }
   }, [projectId])
 
@@ -130,14 +173,39 @@ ${html}
       className="flex h-full w-full flex-col"
     >
       <div className="flex items-center justify-between border-b px-4 py-2">
-        <h2 className="text-sm font-medium">Code Editor</h2>
-        <button
-          onClick={generateHTML}
-          className="flex items-center gap-2 rounded bg-purple-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-purple-700"
-        >
-          Run ▶
-        </button>
+        <div className="flex gap-1 rounded-md bg-gray-800 p-1">
+          {(["html", "css", "javascript", "python"] as Language[]).map(
+            (lang) => (
+              <button
+                key={lang}
+                onClick={() => switchLanguage(lang)}
+                className={`rounded px-3 py-1 text-xs font-medium uppercase ${
+                  currentLanguage === lang
+                    ? "bg-purple-600 text-white"
+                    : "text-gray-400 hover:text-white"
+                }`}
+              >
+                {lang === "javascript" ? "JS" : lang}
+              </button>
+            )
+          )}
+        </div>
+
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-400">
+            {saveStatus === "saving" && "Saving…"}
+            {saveStatus === "saved" && "Saved ✓"}
+          </span>
+
+          <button
+            onClick={generateHTML}
+            className="rounded bg-purple-600 px-4 py-1.5 text-sm text-white hover:bg-purple-700"
+          >
+            Run ▶
+          </button>
+        </div>
       </div>
+
       <div ref={editorRef} className="h-full w-full" />
     </motion.div>
   )

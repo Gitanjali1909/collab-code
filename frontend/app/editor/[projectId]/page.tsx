@@ -1,42 +1,41 @@
 "use client"
 
 import { useState } from "react"
+import { useParams } from "next/navigation"
 import { CodeEditor } from "@/components/code-editor"
 import { PreviewPane } from "@/components/preview-pane"
-import { Collaborators } from "@/components/collaborators"
+import { StatusBar } from "@/components/status-bar"
 
-export default function EditorPage({
-  params,
-}: {
-  params: Promise<{ projectId: string }>
-}) {
+export default function EditorPage() {
+  const { projectId } = useParams<{ projectId: string }>()
+
   const [htmlOutput, setHtmlOutput] = useState("")
-
-  const [projectId, setProjectId] = useState("")
-
-  useState(() => {
-    params.then((p) => setProjectId(p.projectId))
-  })
+  const [isRunning, setIsRunning] = useState(false)
 
   const handleRunCode = (html: string) => {
+    setIsRunning(true)
     setHtmlOutput(html)
+    setTimeout(() => setIsRunning(false), 300)
   }
-
-  if (!projectId) return null
 
   return (
     <div className="flex h-screen w-full flex-col">
-      <header className="flex items-center justify-between border-b px-4 py-2">
-        <h1 className="text-lg font-semibold">Project: {projectId}</h1>
-        <Collaborators projectId={projectId} />
-      </header>
+      <StatusBar projectId={projectId} />
 
       <div className="flex flex-1 overflow-hidden">
         <div className="w-1/2 border-r">
-          <CodeEditor projectId={projectId} onRunCode={handleRunCode} />
+          <CodeEditor
+            projectId={projectId}
+            onRunCode={handleRunCode}
+          />
         </div>
+
         <div className="w-1/2">
-          <PreviewPane projectId={projectId} htmlContent={htmlOutput} />
+          <PreviewPane
+            projectId={projectId}
+            htmlContent={htmlOutput}
+            isRunning={isRunning}
+          />
         </div>
       </div>
     </div>
