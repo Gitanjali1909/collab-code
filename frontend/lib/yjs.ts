@@ -1,86 +1,142 @@
 import * as Y from "yjs"
 import { WebsocketProvider } from "y-websocket"
+import { MonacoBinding } from "y-monaco"
+import type * as Monaco from "monaco-editor"
 
 interface YjsSetup {
   doc: Y.Doc
   provider: WebsocketProvider | null
-  text: Y.Text
+  binding: MonacoBinding | null
+  awareness: WebsocketProvider["awareness"] | null
 }
 
 const yjsInstances = new Map<string, YjsSetup>()
 
-export async function initializeYjs(projectId: string, editor?: any): Promise<YjsSetup> {
-  // Return existing instance if available
+function generateUserColor(): string {
+  const colors = [
+    "#FF6B6B",
+    "#4ECDC4",
+    "#45B7D1",
+    "#FFA07A",
+    "#98D8C8",
+    "#F7DC6F",
+    "#BB8FCE",
+    "#85C1E2",
+    "#F8B739",
+    "#52B788",
+  ]
+  return colors[Math.floor(Math.random() * colors.length)]
+}
+
+function generateUserName(): string {
+  const adjectives = ["Quick", "Bright", "Swift", "Bold", "Smart", "Clever"]
+  const animals = ["Fox", "Eagle", "Wolf", "Tiger", "Hawk", "Lion"]
+  return `${adjectives[Math.floor(Math.random() * adjectives.length)]} ${
+    animals[Math.floor(Math.random() * animals.length)]
+  }`
+}
+
+export function initializeYjs(
+  projectId: string,
+  editor: Monaco.editor.IStandaloneCodeEditor,
+  language: string,
+): YjsSetup {
+  // Reuse existing instance (hot reload / editor remount)
   if (yjsInstances.has(projectId)) {
-    return yjsInstances.get(projectId)!
+    const existing = yjsInstances.get(projectId)!
+
+    if (existing.binding) {
+      existing.binding.destroy()
+    }
+
+    const model = editor.getModel()
+    if (model) {
+      const ytext = existing.doc.getText(language)
+      existing.binding = new MonacoBinding(
+        ytext,
+        model,
+        new Set([editor]),
+        existing.awareness || undefined,
+      )
+    }
+
+    return existing
   }
 
-  // Create a new Yjs document
   const doc = new Y.Doc()
-
-  // Create a shared text type
-  const text = doc.getText("monaco")
-
   let provider: WebsocketProvider | null = null
+  let awareness: WebsocketProvider["awareness"] | null = null
 
   if (process.env.NEXT_PUBLIC_YJS_SERVER_URL) {
-    try {
-      provider = new WebsocketProvider(process.env.NEXT_PUBLIC_YJS_SERVER_URL, projectId, doc, {
-        connect: true,
-        WebSocketPolyfill: undefined,
-      })
+    provider = new WebsocketProvider(
+      process.env.NEXT_PUBLIC_YJS_SERVER_URL,
+      projectId,
+      doc,
+      { connect: true },
+    )
 
-      provider.on("status", (event: any) => {
-        console.log("[v0] Yjs connection status:", event.status)
-      })
+    awareness = provider.awareness
 
-      provider.on("connection-error", () => {
-        console.log("[v0] Yjs server unavailable - running in local mode")
-      })
-    } catch (error) {
-      console.log("[v0] Yjs initialization failed - running in local mode")
-      provider = null
-    }
-  } else {
-    console.log("[v0] Yjs server URL not configured - running in local mode")
-  }
-
-  // Bind Yjs text to Monaco editor if provided
-  if (editor) {
-    // Listen for remote changes
-    text.observe((event) => {
-      if (event.transaction.local) return
-
-      const currentValue = editor.getValue()
-      const yjsValue = text.toString()
-
-      if (currentValue !== yjsValue) {
-        const position = editor.getPosition()
-        editor.setValue(yjsValue)
-        if (position) {
-          editor.setPosition(position)
-        }
-      }
+    awareness.setLocalStateField("user", {
+      name: generateUserName(),
+      color: generateUserColor(),
     })
 
-    // Listen for local changes
-    editor.onDidChangeModelContent(() => {
-      const editorValue = editor.getValue()
-      const yjsValue = text.toString()
+    provider.on("status", (event: { status: string }) => {
+      console.log("Yjs status:", event.status)
+    })
 
-      if (editorValue !== yjsValue) {
-        doc.transact(() => {
-          text.delete(0, text.length)
-          text.insert(0, editorValue)
-        })
-      }
+    provider.on("connection-error", (event: Event) => {
+      console.warn("Yjs connection error — offline mode", event.type)
     })
   }
 
-  const setup: YjsSetup = { doc, provider, text }
+  const model = editor.getModel()
+  let binding: MonacoBinding | null = null
+
+  if (model) {
+    const ytext = doc.getText(language)
+    binding = new MonacoBinding(
+      ytext,
+      model,
+      new Set([editor]),
+      awareness || undefined,
+    )
+  }
+
+  const setup: YjsSetup = {
+    doc,
+    provider,
+    binding,
+    awareness,
+  }
+
   yjsInstances.set(projectId, setup)
-
   return setup
+}
+
+export function updateYjsLanguage(
+  projectId: string,
+  editor: Monaco.editor.IStandaloneCodeEditor,
+  language: string,
+): void {
+  const instance = yjsInstances.get(projectId)
+  if (!instance) return
+
+  if (instance.binding) {
+    instance.binding.destroy()
+  }
+
+  const model = editor.getModel()
+  if (model) {
+    const ytext = instance.doc.getText(language)
+    instance.binding = new MonacoBinding(
+      ytext,
+      model,
+      new Set([editor]),
+      instance.awareness || undefined,
+    )
+  }
 }
 
 export function getYjsInstance(projectId: string): YjsSetup | undefined {
@@ -89,11 +145,11 @@ export function getYjsInstance(projectId: string): YjsSetup | undefined {
 
 export function destroyYjsInstance(projectId: string): void {
   const instance = yjsInstances.get(projectId)
-  if (instance) {
-    if (instance.provider) {
-      instance.provider.destroy()
-    }
-    instance.doc.destroy()
-    yjsInstances.delete(projectId)
-  }
+  if (!instance) return
+
+  instance.binding?.destroy()
+  instance.provider?.destroy()
+  instance.doc.destroy()
+
+  yjsInstances.delete(projectId)
 }

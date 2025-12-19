@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { motion } from "framer-motion"
-import { initializeYjs } from "@/lib/yjs"
+import { initializeYjs, updateYjsLanguage, destroyYjsInstance } from "@/lib/yjs"
 import { initializeSocket } from "@/lib/socket"
 
 interface CodeEditorProps {
@@ -10,36 +10,31 @@ interface CodeEditorProps {
   onRunCode: (html: string) => void
 }
 
-type Language = "html" | "css" | "javascript" | "python"
+type Language = "html" | "css" | "javascript"
 
 export function CodeEditor({ projectId, onRunCode }: CodeEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const monacoRef = useRef<any>(null)
-
-  // ✅ browser-safe timers
-  const debounceTimerRef = useRef<number | null>(null)
-  const saveTimerRef = useRef<number | null>(null)
-
-  const [currentLanguage, setCurrentLanguage] = useState<Language>("html")
-  const [content, setContent] = useState<Record<Language, string>>({
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const saveTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const contentRef = useRef({
     html: "<!-- Write your HTML here -->\n<h1>Hello World</h1>\n",
     css: "/* Write your CSS here */\nbody {\n  font-family: sans-serif;\n  padding: 20px;\n}\n",
     javascript: "// Write your JavaScript here\nconsole.log('Hello World');\n",
-    python: "# Write your Python here\nprint('Hello World')\n",
   })
 
-  const [saveStatus, setSaveStatus] =
-    useState<"idle" | "saving" | "saved">("idle")
+  const [currentLanguage, setCurrentLanguage] = useState<Language>("html")
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle")
 
   const generateHTML = () => {
     const fullHTML = `<!DOCTYPE html>
 <html>
 <head>
-<style>${content.css}</style>
+<style>${contentRef.current.css}</style>
 </head>
 <body>
-${content.html}
-<script>${content.javascript}</script>
+${contentRef.current.html}
+<script>${contentRef.current.javascript}</script>
 </body>
 </html>`
 
@@ -52,10 +47,10 @@ ${content.html}
       await fetch(`/api/projects/${projectId}/save`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(content),
+        body: JSON.stringify(contentRef.current),
       })
       setSaveStatus("saved")
-      window.setTimeout(() => setSaveStatus("idle"), 2000)
+      setTimeout(() => setSaveStatus("idle"), 2000)
     } catch (error) {
       console.error("Failed to save:", error)
       setSaveStatus("idle")
@@ -63,31 +58,25 @@ ${content.html}
   }
 
   const switchLanguage = (lang: Language) => {
-    const editor = monacoRef.current
-    if (!editor) return
+    if (!monacoRef.current) return
 
-    // save current buffer
-    setContent((prev) => ({
-      ...prev,
-      [currentLanguage]: editor.getValue(),
-    }))
+    const currentContent = monacoRef.current.getValue()
+    contentRef.current[currentLanguage] = currentContent
 
     setCurrentLanguage(lang)
 
-    const model = editor.getModel()
+    const model = monacoRef.current.getModel()
     if (model) {
       const monaco = (window as any).monaco
+      monaco.editor.setModelLanguage(model, lang === "javascript" ? "javascript" : lang)
+      updateYjsLanguage(projectId, monacoRef.current, lang)
 
-      // ✅ Monaco language mapping (Python was broken before)
-      const monacoLang =
-        lang === "javascript"
-          ? "javascript"
-          : lang === "python"
-          ? "python"
-          : lang
-
-      monaco.editor.setModelLanguage(model, monacoLang)
-      editor.setValue(content[lang])
+      const yjsValue = model.getValue()
+      if (yjsValue) {
+        contentRef.current[lang] = yjsValue
+      } else {
+        monacoRef.current.setValue(contentRef.current[lang])
+      }
     }
   }
 
@@ -100,50 +89,62 @@ ${content.html}
       const monaco = await import("monaco-editor")
       ;(window as any).monaco = monaco
 
-      if (!mounted) return
+      if (!mounted || !editorRef.current) return
 
       const editor = monaco.editor.create(editorRef.current, {
-        value: content.html,
+        value: contentRef.current.html,
         language: "html",
         theme: "vs-dark",
         automaticLayout: true,
         minimap: { enabled: false },
         fontSize: 14,
+        lineNumbers: "on",
+        renderWhitespace: "selection",
         scrollBeyondLastLine: false,
       })
 
       monacoRef.current = editor
 
-      editor.addCommand(
-        monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
-        generateHTML
-      )
+      editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
+        generateHTML()
+      })
 
       editor.onDidChangeModelContent(() => {
-        const value = editor.getValue()
+        const currentContent = editor.getValue()
+        contentRef.current[currentLanguage] = currentContent
 
-        setContent((prev) => ({
-          ...prev,
-          [currentLanguage]: value,
-        }))
+        if (debounceTimerRef.current) {
+          clearTimeout(debounceTimerRef.current)
+        }
+        if (saveTimerRef.current) {
+          clearTimeout(saveTimerRef.current)
+        }
 
-        if (debounceTimerRef.current)
-          window.clearTimeout(debounceTimerRef.current)
-        if (saveTimerRef.current)
-          window.clearTimeout(saveTimerRef.current)
+        debounceTimerRef.current = setTimeout(() => {
+          generateHTML()
+        }, 800)
 
-        debounceTimerRef.current = window.setTimeout(generateHTML, 800)
-        saveTimerRef.current = window.setTimeout(saveToBackend, 2000)
+        saveTimerRef.current = setTimeout(() => {
+          saveToBackend()
+        }, 2000)
       })
 
       try {
-        await initializeYjs(projectId, editor)
-      } catch {
-        // silent fallback
+        const yjsSetup = initializeYjs(projectId, editor, currentLanguage)
+
+        const model = editor.getModel()
+        if (model && model.getValue() === "") {
+          editor.setValue(contentRef.current[currentLanguage])
+        }
+      } catch (error) {
+        console.log("Yjs not available - continuing in local mode")
       }
 
       const socket = initializeSocket(projectId)
+
       if (socket) {
+        socket.on("cursor-update", (data: any) => {})
+
         editor.onDidChangeCursorPosition((e) => {
           socket.emit("cursor-move", {
             projectId,
@@ -157,11 +158,16 @@ ${content.html}
 
     return () => {
       mounted = false
-      if (debounceTimerRef.current)
-        window.clearTimeout(debounceTimerRef.current)
-      if (saveTimerRef.current)
-        window.clearTimeout(saveTimerRef.current)
-      monacoRef.current?.dispose()
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current)
+      }
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current)
+      }
+      if (monacoRef.current) {
+        monacoRef.current.dispose()
+      }
+      destroyYjsInstance(projectId)
     }
   }, [projectId])
 
@@ -174,38 +180,37 @@ ${content.html}
     >
       <div className="flex items-center justify-between border-b px-4 py-2">
         <div className="flex gap-1 rounded-md bg-gray-800 p-1">
-          {(["html", "css", "javascript", "python"] as Language[]).map(
-            (lang) => (
-              <button
-                key={lang}
-                onClick={() => switchLanguage(lang)}
-                className={`rounded px-3 py-1 text-xs font-medium uppercase ${
-                  currentLanguage === lang
-                    ? "bg-purple-600 text-white"
-                    : "text-gray-400 hover:text-white"
-                }`}
-              >
-                {lang === "javascript" ? "JS" : lang}
-              </button>
-            )
-          )}
+          {(["html", "css", "javascript"] as Language[]).map((lang) => (
+            <button
+              key={lang}
+              onClick={() => switchLanguage(lang)}
+              className={`rounded px-3 py-1 text-xs font-medium uppercase transition-colors ${
+                currentLanguage === lang ? "bg-purple-600 text-white" : "text-gray-400 hover:text-white"
+              }`}
+            >
+              {lang === "javascript" ? "JS" : lang}
+            </button>
+          ))}
         </div>
 
         <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-400">
-            {saveStatus === "saving" && "Saving…"}
+          <motion.span
+            initial={{ opacity: 0 }}
+            animate={{ opacity: saveStatus !== "idle" ? 1 : 0 }}
+            className="text-xs text-gray-400"
+          >
+            {saveStatus === "saving" && "Saving..."}
             {saveStatus === "saved" && "Saved ✓"}
-          </span>
+          </motion.span>
 
           <button
             onClick={generateHTML}
-            className="rounded bg-purple-600 px-4 py-1.5 text-sm text-white hover:bg-purple-700"
+            className="flex items-center gap-2 rounded bg-purple-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-purple-700"
           >
             Run ▶
           </button>
         </div>
       </div>
-
       <div ref={editorRef} className="h-full w-full" />
     </motion.div>
   )
