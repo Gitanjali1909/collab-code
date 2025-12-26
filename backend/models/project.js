@@ -4,6 +4,7 @@ const ProjectSchema = new mongoose.Schema({
   title: String,
   collaborators: [{type: mongoose.Types.ObjectId, ref:'User'}],
   // store latest document state (optional): could be CRDT binary or plain text
+  ySnapshot: Buffer,
   content: { type: String, default: '' },
   updatedAt: {type:Date, default:Date.now},
 });

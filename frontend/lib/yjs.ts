@@ -12,7 +12,6 @@ interface YjsSetup {
 const yjsInstances = new Map<string, YjsSetup>()
 
 export function initializeYjs(projectId: string, editor: Monaco.editor.IStandaloneCodeEditor): YjsSetup {
-  // Return existing instance if available
   if (yjsInstances.has(projectId)) {
     const existing = yjsInstances.get(projectId)!
 
